@@ -1,0 +1,201 @@
+@import "tailwindcss";
+
+
+:root {
+    --primary: #4f46e5;
+    --primary-light: #eef2ff;
+    --primary-hover: #4338ca;
+}
+
+/* Base ergonomics */
+* {
+    -webkit-tap-highlight-color: transparent;
+    box-sizing: border-box;
+}
+
+html, body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    min-height: 100vh;
+    min-height: 100dvh;
+    touch-action: manipulation;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+/* Touch and click optimizations */
+button, input, select, a {
+    touch-action: manipulation;
+}
+
+/* Hardware accelerated card transitions */
+.card-enter {
+    animation: slideIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    will-change: transform, opacity;
+    backface-visibility: hidden;
+}
+.card-exit {
+    animation: slideOut 0.18s cubic-bezier(0.4, 0, 1, 1) forwards;
+    will-change: transform, opacity;
+    backface-visibility: hidden;
+}
+.card-enter-reverse {
+    animation: slideInReverse 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    will-change: transform, opacity;
+    backface-visibility: hidden;
+}
+.card-exit-reverse {
+    animation: slideOutReverse 0.18s cubic-bezier(0.4, 0, 1, 1) forwards;
+    will-change: transform, opacity;
+    backface-visibility: hidden;
+}
+.fade-in {
+    animation: fadeIn 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    will-change: transform, opacity;
+    backface-visibility: hidden;
+}
+
+@keyframes slideIn {
+    from {
+        transform: translate3d(24px, 0, 0);
+        opacity: 0;
+    }
+    to {
+        transform: translate3d(0, 0, 0);
+        opacity: 1;
+    }
+}
+
+@keyframes slideOut {
+    from {
+        transform: translate3d(0, 0, 0);
+        opacity: 1;
+    }
+    to {
+        transform: translate3d(-24px, 0, 0);
+        opacity: 0;
+    }
+}
+
+@keyframes slideInReverse {
+    from {
+        transform: translate3d(-24px, 0, 0);
+        opacity: 0;
+    }
+    to {
+        transform: translate3d(0, 0, 0);
+        opacity: 1;
+    }
+}
+
+@keyframes slideOutReverse {
+    from {
+        transform: translate3d(0, 0, 0);
+        opacity: 1;
+    }
+    to {
+        transform: translate3d(24px, 0, 0);
+        opacity: 0;
+    }
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: scale3d(0.985, 0.985, 1);
+    }
+    to {
+        opacity: 1;
+        transform: scale3d(1, 1, 1);
+    }
+}
+
+/* Option Buttons & Interactions */
+.btn-option {
+    transition: transform 0.15s cubic-bezier(0.2, 0, 0, 1),
+                border-color 0.15s ease,
+                background-color 0.15s ease,
+                box-shadow 0.15s ease;
+    will-change: transform, border-color, background-color, box-shadow;
+    touch-action: manipulation;
+}
+
+.btn-option:active {
+    transform: scale(0.985);
+}
+
+.btn-option.selected {
+    border-color: #4f46e5 !important;
+    background-color: #f5f3ff !important;
+    box-shadow: 0 8px 20px -4px rgba(79, 70, 229, 0.22) !important;
+    transform: translateY(-1px);
+}
+
+.btn-option.selected .option-circle {
+    border-color: #4f46e5 !important;
+    background-color: #4f46e5 !important;
+    color: #ffffff !important;
+    transform: scale(1.06);
+    box-shadow: 0 4px 10px rgba(79, 70, 229, 0.35);
+}
+
+.btn-option.selected p {
+    color: #1e1b4b !important;
+    font-weight: 600;
+}
+
+/* Custom Scrollbars */
+.custom-scroll::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+.custom-scroll::-webkit-scrollbar-track {
+    background: #f1f5f9;
+    border-radius: 4px;
+}
+.custom-scroll::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 4px;
+}
+.custom-scroll::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+    display: none;
+}
+.no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+
+/* Safe Area Insets for Mobile */
+.pb-safe {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom, 1rem));
+}
+.pt-safe {
+    padding-top: max(0.75rem, env(safe-area-inset-top, 0.75rem));
+}
+
+/* Print Styles */
+@media print {
+    .no-print {
+        display: none !important;
+    }
+    body, html, main, #screen-result {
+        height: auto !important;
+        overflow: visible !important;
+        background: white !important;
+    }
+    .printable-area {
+        padding: 0 !important;
+        overflow: visible !important;
+    }
+    .page-break {
+        page-break-before: always;
+    }
+    .shadow-sm, .shadow-xs, .shadow-md, .shadow-lg, .shadow-2xs {
+        box-shadow: none !important;
+        border: 1px solid #e2e8f0 !important;
+    }
+}

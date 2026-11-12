@@ -1,0 +1,6 @@
+{
+  "name": "PAPI Kostick Test",
+  "description": "Aplikasi mandiri untuk mengukur preferensi dan perilaku kerja menggunakan instrumen PAPI Kostick. Fitur lengkap dengan skor dan chart radar.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
