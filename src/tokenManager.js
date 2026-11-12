@@ -1,5 +1,5 @@
-// Token Management Module for PAPI Kostick Assessment
-// Handles token creation, batch generation, validation, usage tracking, and admin authentication
+// Token Management Client Module (Dual-Mode: Cloud API with LocalStorage Fallback)
+// Automatically syncs with Vercel KV / Redis backend, and works 100% offline if needed
 
 const STORAGE_KEYS = {
     TOKENS: 'papi_assessment_tokens',
@@ -34,7 +34,33 @@ const DEFAULT_SEED_TOKENS = [
     }
 ];
 
-export function getAdminPin() {
+// Helper for fetch with timeout
+async function fetchApi(url, options = {}, timeoutMs = 4000) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const response = await fetch(url, {
+            ...options,
+            headers: {
+                'Content-Type': 'application/json',
+                ...(options.headers || {})
+            },
+            signal: controller.signal
+        });
+        clearTimeout(id);
+        if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            return { ok: false, status: response.status, data: errData };
+        }
+        const data = await response.json();
+        return { ok: true, data };
+    } catch {
+        clearTimeout(id);
+        return { ok: false, error: true };
+    }
+}
+
+export function getLocalAdminPin() {
     try {
         return localStorage.getItem(STORAGE_KEYS.ADMIN_PIN) || DEFAULT_ADMIN_PIN;
     } catch {
@@ -42,9 +68,39 @@ export function getAdminPin() {
     }
 }
 
-export function setAdminPin(newPin) {
+export async function verifyAdminPin(inputPin) {
+    // 1. Try Cloud API
+    const res = await fetchApi('/api/admin-pin', {
+        method: 'POST',
+        body: JSON.stringify({ currentPin: inputPin, action: 'verify' })
+    });
+    if (res.ok && res.data) {
+        return res.data.success;
+    }
+    // 2. Fallback to Local
+    const local = getLocalAdminPin();
+    return String(inputPin).trim() === String(local).trim();
+}
+
+export async function setAdminPin(currentPin, newPin) {
     if (!newPin || newPin.trim().length < 4) {
-        return { success: false, message: 'PIN minimal harus 4 karakter!' };
+        return { success: false, message: 'PIN baru minimal harus 4 karakter!' };
+    }
+
+    // 1. Try Cloud API
+    const res = await fetchApi('/api/admin-pin', {
+        method: 'POST',
+        body: JSON.stringify({ currentPin, newPin, action: 'change' })
+    });
+    if (res.ok && res.data) {
+        try { localStorage.setItem(STORAGE_KEYS.ADMIN_PIN, newPin.trim()); } catch {}
+        return res.data;
+    }
+
+    // 2. Fallback to Local
+    const local = getLocalAdminPin();
+    if (String(currentPin).trim() !== String(local).trim()) {
+        return { success: false, message: 'PIN saat ini salah!' };
     }
     try {
         localStorage.setItem(STORAGE_KEYS.ADMIN_PIN, newPin.trim());
@@ -54,21 +110,16 @@ export function setAdminPin(newPin) {
     }
 }
 
-export function verifyAdminPin(inputPin) {
-    const currentPin = getAdminPin();
-    return String(inputPin).trim() === String(currentPin).trim();
-}
-
-export function getAllTokens() {
+export function getLocalTokens() {
     try {
         const raw = localStorage.getItem(STORAGE_KEYS.TOKENS);
         if (!raw) {
-            saveAllTokens(DEFAULT_SEED_TOKENS);
+            saveLocalTokens(DEFAULT_SEED_TOKENS);
             return DEFAULT_SEED_TOKENS;
         }
         const tokens = JSON.parse(raw);
         if (!Array.isArray(tokens)) {
-            saveAllTokens(DEFAULT_SEED_TOKENS);
+            saveLocalTokens(DEFAULT_SEED_TOKENS);
             return DEFAULT_SEED_TOKENS;
         }
         return tokens;
@@ -77,7 +128,7 @@ export function getAllTokens() {
     }
 }
 
-export function saveAllTokens(tokens) {
+export function saveLocalTokens(tokens) {
     try {
         localStorage.setItem(STORAGE_KEYS.TOKENS, JSON.stringify(tokens));
         return true;
@@ -87,9 +138,19 @@ export function saveAllTokens(tokens) {
     }
 }
 
-// Generate random uppercase alphanumeric token string: e.g. PAPI-7K2X-9M4Q
+export async function fetchAllTokens(pin) {
+    // 1. Try Cloud API
+    const res = await fetchApi(`/api/tokens?pin=${encodeURIComponent(pin)}`);
+    if (res.ok && res.data && Array.isArray(res.data.tokens)) {
+        saveLocalTokens(res.data.tokens);
+        return res.data.tokens;
+    }
+    // 2. Fallback to Local
+    return getLocalTokens();
+}
+
 export function createRandomTokenCode(prefix = 'PAPI') {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // exclude ambiguous 0, O, 1, I
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     const randomChunk = (len) => {
         let res = '';
         for (let i = 0; i < len; i++) {
@@ -101,8 +162,21 @@ export function createRandomTokenCode(prefix = 'PAPI') {
     return `${cleanPrefix}-${randomChunk(4)}-${randomChunk(4)}`;
 }
 
-export function addSingleToken({ code, label = 'Peserta Asesmen', type = 'single', expiryDays = 0 }) {
-    const tokens = getAllTokens();
+export async function addSingleToken({ pin, code, label = 'Peserta Asesmen', type = 'single', expiryDays = 0 }) {
+    // 1. Try Cloud API
+    const res = await fetchApi('/api/tokens', {
+        method: 'POST',
+        body: JSON.stringify({ pin, code, label, type, expiryDays, action: 'single' })
+    });
+    if (res.ok && res.data && res.data.token) {
+        const local = getLocalTokens();
+        local.unshift(res.data.token);
+        saveLocalTokens(local);
+        return { success: true, token: res.data.token, message: `Token ${res.data.token.code} berhasil dibuat!` };
+    }
+
+    // 2. Fallback to Local
+    const tokens = getLocalTokens();
     const cleanCode = (code || createRandomTokenCode()).toUpperCase().trim();
 
     if (tokens.some(t => t.code === cleanCode)) {
@@ -129,14 +203,26 @@ export function addSingleToken({ code, label = 'Peserta Asesmen', type = 'single
     };
 
     tokens.unshift(newToken);
-    saveAllTokens(tokens);
+    saveLocalTokens(tokens);
     return { success: true, token: newToken, message: `Token ${cleanCode} berhasil dibuat!` };
 }
 
-export function batchGenerateTokens({ count = 5, prefix = 'PAPI', label = 'Batch Kandidat', type = 'single', expiryDays = 0 }) {
-    const tokens = getAllTokens();
+export async function batchGenerateTokens({ pin, count = 5, prefix = 'PAPI', label = 'Batch Kandidat', type = 'single', expiryDays = 0 }) {
+    // 1. Try Cloud API
+    const res = await fetchApi('/api/tokens', {
+        method: 'POST',
+        body: JSON.stringify({ pin, count, prefix, label, type, expiryDays, action: 'batch' })
+    });
+    if (res.ok && res.data && Array.isArray(res.data.tokens)) {
+        const local = getLocalTokens();
+        saveLocalTokens([...res.data.tokens, ...local]);
+        return { success: true, count: res.data.tokens.length, tokens: res.data.tokens };
+    }
+
+    // 2. Fallback to Local
+    const tokens = getLocalTokens();
     const generated = [];
-    const num = Math.min(Math.max(1, Number(count) || 5), 100); // safety 1 - 100
+    const num = Math.min(Math.max(1, Number(count) || 5), 100);
 
     let expiresAt = null;
     if (expiryDays > 0) {
@@ -166,38 +252,53 @@ export function batchGenerateTokens({ count = 5, prefix = 'PAPI', label = 'Batch
     }
 
     const updated = [...generated, ...tokens];
-    saveAllTokens(updated);
+    saveLocalTokens(updated);
     return { success: true, count: generated.length, tokens: generated };
 }
 
-export function deleteToken(code) {
-    const tokens = getAllTokens();
+export async function deleteToken(pin, code) {
+    // 1. Try Cloud API
+    await fetchApi('/api/tokens', {
+        method: 'DELETE',
+        body: JSON.stringify({ pin, code })
+    });
+
+    // 2. Always sync Local
+    const tokens = getLocalTokens();
     const filtered = tokens.filter(t => t.code !== code);
-    saveAllTokens(filtered);
+    saveLocalTokens(filtered);
     return { success: true };
 }
 
-export function validateToken(inputCode) {
+export async function validateToken(inputCode) {
     if (!inputCode) return { valid: false, message: 'Masukkan token asesmen Anda.' };
     const code = inputCode.trim().toUpperCase();
-    const tokens = getAllTokens();
 
+    // 1. Try Cloud API first
+    const res = await fetchApi('/api/validate-token', {
+        method: 'POST',
+        body: JSON.stringify({ code })
+    });
+    if (res.ok && res.data) {
+        return res.data;
+    }
+
+    // 2. Fallback to LocalStorage
+    const tokens = getLocalTokens();
     const token = tokens.find(t => t.code === code);
     if (!token) {
         return { valid: false, message: 'Token tidak ditemukan atau tidak valid. Silakan periksa kembali atau hubungi penguji.' };
     }
 
-    // Check expiry
     if (token.expiresAt) {
         const expTime = new Date(token.expiresAt).getTime();
         if (Date.now() > expTime) {
             token.status = 'expired';
-            saveAllTokens(tokens);
+            saveLocalTokens(tokens);
             return { valid: false, message: 'Token sudah kedaluwarsa pada ' + new Date(token.expiresAt).toLocaleDateString('id-ID') + '.' };
         }
     }
 
-    // Check single-use
     if (token.type === 'single' && token.isUsed) {
         return { valid: false, message: `Token ini sudah pernah digunakan oleh "${token.usedBy || 'Peserta lain'}" pada ${token.usedAt ? new Date(token.usedAt).toLocaleString('id-ID') : '-'}.` };
     }
@@ -205,9 +306,22 @@ export function validateToken(inputCode) {
     return { valid: true, token };
 }
 
-export function markTokenUsed(inputCode, participantName = 'Peserta') {
+export async function submitAssessmentCloud({ tokenCode, participant, scores, durationStr, answers }) {
+    // 1. Try Cloud API
+    const res = await fetchApi('/api/submit-assessment', {
+        method: 'POST',
+        body: JSON.stringify({ tokenCode, participant, scores, durationStr, answers })
+    });
+
+    // 2. Sync Local
+    markLocalTokenUsed(tokenCode, participant ? participant.name : 'Peserta');
+    return res.ok;
+}
+
+export function markLocalTokenUsed(inputCode, participantName = 'Peserta') {
+    if (!inputCode) return;
     const code = inputCode.trim().toUpperCase();
-    const tokens = getAllTokens();
+    const tokens = getLocalTokens();
     const token = tokens.find(t => t.code === code);
 
     if (token) {
@@ -217,7 +331,7 @@ export function markTokenUsed(inputCode, participantName = 'Peserta') {
         if (token.type === 'single') {
             token.status = 'used';
         }
-        saveAllTokens(tokens);
+        saveLocalTokens(tokens);
     }
 }
 
@@ -241,8 +355,8 @@ export function setActiveSessionToken(code) {
     }
 }
 
-export function exportTokensToCSV() {
-    const tokens = getAllTokens();
+export function exportTokensToCSV(tokensList = null) {
+    const tokens = tokensList || getLocalTokens();
     const rows = [];
 
     const escapeCSV = (val) => {

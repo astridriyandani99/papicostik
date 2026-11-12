@@ -2,18 +2,19 @@ import './style.css';
 import Chart from 'chart.js/auto';
 import { questions, TRAIT_INFO, DIMENSIONS } from './data.js';
 import {
-    getAllTokens,
+    fetchAllTokens,
     addSingleToken,
     batchGenerateTokens,
     deleteToken,
     validateToken,
-    markTokenUsed,
+    submitAssessmentCloud,
     getActiveSessionToken,
     setActiveSessionToken,
     verifyAdminPin,
     setAdminPin,
     exportTokensToCSV,
-    createRandomTokenCode
+    createRandomTokenCode,
+    getLocalTokens
 } from './tokenManager.js';
 
 // Application State
@@ -26,6 +27,7 @@ const state = {
     elapsedSeconds: 0,
     soundEnabled: true,
     activeToken: null,
+    adminPin: 'admin123',
     participant: {
         name: '',
         role: '',
@@ -235,14 +237,23 @@ function showToast(message, type = 'info') {
 }
 
 // Token Gate Verification
-function handleTokenVerification(tokenString) {
+async function handleTokenVerification(tokenString) {
     const code = (tokenString || (DOM.inputGateToken && DOM.inputGateToken.value) || '').trim();
     if (!code) {
         showTokenGateError('Silakan ketik atau tempel token asesmen Anda.');
         return;
     }
 
-    const check = validateToken(code);
+    if (DOM.btnValidateToken) DOM.btnValidateToken.disabled = true;
+    let check;
+    try {
+        check = await validateToken(code);
+    } catch {
+        check = { valid: false, message: 'Gagal memverifikasi token. Silakan coba lagi.' };
+    } finally {
+        if (DOM.btnValidateToken) DOM.btnValidateToken.disabled = false;
+    }
+
     if (!check.valid) {
         showTokenGateError(check.message);
         return;
@@ -647,21 +658,28 @@ function closeAdminLoginModal() {
     }, 200);
 }
 
-function handleAdminLogin() {
+async function handleAdminLogin() {
     const pin = (DOM.inputAdminPin && DOM.inputAdminPin.value) || '';
-    if (verifyAdminPin(pin)) {
-        closeAdminLoginModal();
-        openAdminPanelModal();
-    } else {
-        if (DOM.adminLoginError) {
-            DOM.adminLoginError.classList.remove('hidden');
-            DOM.inputAdminPin.classList.add('border-rose-500');
-            DOM.inputAdminPin.focus();
+    if (DOM.btnSubmitAdminLogin) DOM.btnSubmitAdminLogin.disabled = true;
+    try {
+        const isValid = await verifyAdminPin(pin);
+        if (isValid) {
+            state.adminPin = pin;
+            closeAdminLoginModal();
+            openAdminPanelModal();
+        } else {
+            if (DOM.adminLoginError) {
+                DOM.adminLoginError.classList.remove('hidden');
+                DOM.inputAdminPin.classList.add('border-rose-500');
+                DOM.inputAdminPin.focus();
+            }
         }
+    } finally {
+        if (DOM.btnSubmitAdminLogin) DOM.btnSubmitAdminLogin.disabled = false;
     }
 }
 
-function openAdminPanelModal() {
+async function openAdminPanelModal() {
     if (!DOM.adminPanelModal) return;
     DOM.adminPanelModal.classList.remove('hidden');
     void DOM.adminPanelModal.offsetWidth;
@@ -669,7 +687,7 @@ function openAdminPanelModal() {
     DOM.adminPanelContent.classList.remove('scale-95');
     DOM.adminPanelContent.classList.add('scale-100');
 
-    renderAdminTokensTable();
+    await renderAdminTokensTable();
     updateAdminStats();
 }
 
@@ -708,35 +726,41 @@ function switchAdminTab(tabId) {
 }
 
 function updateAdminStats() {
-    const tokens = getAllTokens();
+    const tokens = getLocalTokens();
     if (DOM.adminTotalTokensBadge) DOM.adminTotalTokensBadge.textContent = tokens.length;
 }
 
-function handleAdminGenerateToken() {
+async function handleAdminGenerateToken() {
     const prefix = (DOM.inputGenPrefix && DOM.inputGenPrefix.value) || 'PAPI';
     const label = (DOM.inputGenLabel && DOM.inputGenLabel.value) || 'Kandidat Asesmen';
     const type = (DOM.inputGenType && DOM.inputGenType.value) || 'single';
     const expiryDays = Number((DOM.inputGenExpiry && DOM.inputGenExpiry.value) || 0);
 
-    if (state.adminGenerateMode === 'single') {
-        const res = addSingleToken({ prefix, label, type, expiryDays });
-        if (res.success) {
-            state.lastGeneratedTokens = [res.token];
-            renderGeneratedPreview(state.lastGeneratedTokens);
-            showToast(`Token ${res.token.code} berhasil digenerate!`, 'success');
+    if (DOM.btnSubmitGenerate) DOM.btnSubmitGenerate.disabled = true;
+    try {
+        if (state.adminGenerateMode === 'single') {
+            const res = await addSingleToken({ pin: state.adminPin, prefix, label, type, expiryDays });
+            if (res.success) {
+                state.lastGeneratedTokens = [res.token];
+                renderGeneratedPreview(state.lastGeneratedTokens);
+                showToast(`Token ${res.token.code} berhasil digenerate!`, 'success');
+            } else {
+                showToast(res.message, 'error');
+            }
         } else {
-            showToast(res.message, 'error');
+            const count = Number((DOM.inputGenCount && DOM.inputGenCount.value) || 5);
+            const res = await batchGenerateTokens({ pin: state.adminPin, count, prefix, label, type, expiryDays });
+            if (res.success) {
+                state.lastGeneratedTokens = res.tokens;
+                renderGeneratedPreview(state.lastGeneratedTokens);
+                showToast(`Berhasil generate ${res.tokens.length} token massal!`, 'success');
+            }
         }
-    } else {
-        const count = Number((DOM.inputGenCount && DOM.inputGenCount.value) || 5);
-        const res = batchGenerateTokens({ count, prefix, label, type, expiryDays });
-        if (res.success) {
-            state.lastGeneratedTokens = res.tokens;
-            renderGeneratedPreview(state.lastGeneratedTokens);
-            showToast(`Berhasil generate ${res.tokens.length} token massal!`, 'success');
-        }
+        await renderAdminTokensTable();
+        updateAdminStats();
+    } finally {
+        if (DOM.btnSubmitGenerate) DOM.btnSubmitGenerate.disabled = false;
     }
-    updateAdminStats();
 }
 
 function renderGeneratedPreview(tokenList) {
@@ -773,11 +797,13 @@ function renderGeneratedPreview(tokenList) {
     });
 }
 
-function renderAdminTokensTable() {
+async function renderAdminTokensTable() {
     if (!DOM.adminTokensTableBody) return;
     DOM.adminTokensTableBody.innerHTML = '';
 
-    const allTokens = getAllTokens();
+    const allTokens = await fetchAllTokens(state.adminPin);
+    if (DOM.adminTotalTokensBadge) DOM.adminTotalTokensBadge.textContent = allTokens.length;
+
     const query = (DOM.adminTokenSearch && DOM.adminTokenSearch.value.toLowerCase().trim()) || '';
     const filter = state.adminCurrentFilter;
 
@@ -849,10 +875,10 @@ function renderAdminTokensTable() {
             });
         });
 
-        tr.querySelector('.btn-del-row').addEventListener('click', function() {
+        tr.querySelector('.btn-del-row').addEventListener('click', async function() {
             if (confirm(`Hapus token "${this.dataset.code}"?`)) {
-                deleteToken(this.dataset.code);
-                renderAdminTokensTable();
+                await deleteToken(state.adminPin, this.dataset.code);
+                await renderAdminTokensTable();
                 updateAdminStats();
                 showToast('Token dihapus');
             }
@@ -862,23 +888,30 @@ function renderAdminTokensTable() {
     });
 }
 
-function handleAdminChangePin() {
+async function handleAdminChangePin() {
     const curPin = (DOM.inputCurrentPin && DOM.inputCurrentPin.value) || '';
     const newPin = (DOM.inputNewPin && DOM.inputNewPin.value) || '';
 
-    if (!verifyAdminPin(curPin)) {
-        showToast('PIN saat ini salah!', 'error');
-        if (DOM.inputCurrentPin) DOM.inputCurrentPin.focus();
-        return;
-    }
+    if (DOM.btnSavePin) DOM.btnSavePin.disabled = true;
+    try {
+        const isCurValid = await verifyAdminPin(curPin);
+        if (!isCurValid) {
+            showToast('PIN saat ini salah!', 'error');
+            if (DOM.inputCurrentPin) DOM.inputCurrentPin.focus();
+            return;
+        }
 
-    const res = setAdminPin(newPin);
-    if (res.success) {
-        showToast(res.message, 'success');
-        if (DOM.inputCurrentPin) DOM.inputCurrentPin.value = '';
-        if (DOM.inputNewPin) DOM.inputNewPin.value = '';
-    } else {
-        showToast(res.message, 'error');
+        const res = await setAdminPin(curPin, newPin);
+        if (res.success) {
+            state.adminPin = newPin;
+            showToast(res.message, 'success');
+            if (DOM.inputCurrentPin) DOM.inputCurrentPin.value = '';
+            if (DOM.inputNewPin) DOM.inputNewPin.value = '';
+        } else {
+            showToast(res.message, 'error');
+        }
+    } finally {
+        if (DOM.btnSavePin) DOM.btnSavePin.disabled = false;
     }
 }
 
@@ -1342,17 +1375,12 @@ function showReviewScreen() {
 }
 
 // Psychometric Scoring and Final Analytics
-function generateFinalResults() {
+async function generateFinalResults() {
     stopTimer();
     DOM.screenReview.classList.add('hidden');
     DOM.screenResult.classList.remove('hidden');
     DOM.headerTimer.classList.add('hidden');
     DOM.btnGrid.classList.add('hidden');
-
-    // Mark token as used
-    if (state.activeToken) {
-        markTokenUsed(state.activeToken, state.participant.name);
-    }
 
     // 1. Calculate Scores for 20 Aspects
     const scores = {};
@@ -1366,6 +1394,25 @@ function generateFinalResults() {
             scores[q.option_b.trait]++;
         }
     });
+
+    const mins = Math.floor(state.elapsedSeconds / 60);
+    const secs = state.elapsedSeconds % 60;
+    const durationStr = `${mins} Menit ${secs} Detik`;
+
+    // Mark token as used and submit assessment results to cloud
+    if (state.activeToken) {
+        try {
+            await submitAssessmentCloud({
+                tokenCode: state.activeToken,
+                participant: state.participant,
+                scores,
+                durationStr,
+                answers: state.answers
+            });
+        } catch (e) {
+            console.error('Error submitting assessment to cloud', e);
+        }
+    }
 
     // 2. Populate Report Metadata
     const setElemText = (id, val) => {
@@ -1381,10 +1428,6 @@ function generateFinalResults() {
     setElemText('report-user-gender', state.participant.gender);
     setElemText('report-user-birth-year', state.participant.birthYear);
     setElemText('report-date', state.participant.date);
-    
-    const mins = Math.floor(state.elapsedSeconds / 60);
-    const secs = state.elapsedSeconds % 60;
-    const durationStr = `${mins} Menit ${secs} Detik`;
     setElemText('report-duration', durationStr);
     setElemText('result-meta-text', `Peserta: ${state.participant.name} (${state.participant.role}) • Tanggal: ${state.participant.date} • Durasi: ${durationStr}`);
 
@@ -2019,7 +2062,7 @@ window.renderAnswersSheetTable = renderAnswersSheetTable;
 window.copySummaryToClipboard = copySummaryToClipboard;
 
 // Initialization
-function init() {
+async function init() {
     initDOMCache();
     loadPersistedState();
     updateSoundIcon();
@@ -2030,16 +2073,21 @@ function init() {
     // Check active session token
     const sessionToken = getActiveSessionToken() || state.activeToken;
     if (sessionToken) {
-        const val = validateToken(sessionToken);
-        if (val.valid) {
-            state.activeToken = sessionToken;
-            DOM.screenToken.classList.add('hidden');
-            DOM.screenIntro.classList.remove('hidden');
-            if (DOM.introVerifiedTokenPill) DOM.introVerifiedTokenPill.classList.remove('hidden');
-            if (DOM.introTokenCodeText) DOM.introTokenCodeText.textContent = sessionToken;
-        } else {
-            setActiveSessionToken(null);
-            state.activeToken = null;
+        try {
+            const val = await validateToken(sessionToken);
+            if (val.valid) {
+                state.activeToken = sessionToken;
+                DOM.screenToken.classList.add('hidden');
+                DOM.screenIntro.classList.remove('hidden');
+                if (DOM.introVerifiedTokenPill) DOM.introVerifiedTokenPill.classList.remove('hidden');
+                if (DOM.introTokenCodeText) DOM.introTokenCodeText.textContent = sessionToken;
+            } else {
+                setActiveSessionToken(null);
+                state.activeToken = null;
+                DOM.screenToken.classList.remove('hidden');
+                DOM.screenIntro.classList.add('hidden');
+            }
+        } catch {
             DOM.screenToken.classList.remove('hidden');
             DOM.screenIntro.classList.add('hidden');
         }
@@ -2051,7 +2099,7 @@ function init() {
 
 // Boot
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
+    document.addEventListener('DOMContentLoaded', () => { init(); });
 } else {
     init();
 }
